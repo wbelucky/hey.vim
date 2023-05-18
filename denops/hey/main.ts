@@ -202,7 +202,7 @@ export async function main(denops: Denops) {
     function! Hey() range abort
       call denops#notify("${denops.name}", "hey", [a:firstline, a:lastline])
     endfunction
-    command! -nargs=0 -range Hey <line1>,<line2>call Hey(<q-args>)
+    command! -range Hey <line1>,<line2>call Hey()
 
     function! HeyAbort() abort
       call denops#notify("${denops.name}", "abort", [])
