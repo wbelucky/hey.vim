@@ -155,22 +155,23 @@ export async function main(denops: Denops) {
   };
 
   denops.dispatcher = {
-    hoyEdit: createCmd(CmdHeyEdit),
-    async heyEdit(...args) {
-      const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
-      seq_curs.push(seq_cur);
-      cmd = new CmdHeyEdit(
-        ...(args as ConstructorParameters<typeof CmdHeyEdit>)
-      );
-      try {
-        controller = new AbortController();
-        await cmd.run(denops, controller);
-      } catch (e) {
-        console.log(e);
-      } finally {
-        controller = undefined;
-      }
-    },
+    heyEdit: createCmd(CmdHeyEdit),
+    hey: createCmd(CmdHey),
+    // async heyEdit(...args) {
+    //   const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
+    //   seq_curs.push(seq_cur);
+    //   cmd = new CmdHeyEdit(
+    //     ...(args as ConstructorParameters<typeof CmdHeyEdit>)
+    //   );
+    //   try {
+    //     controller = new AbortController();
+    //     await cmd.run(denops, controller);
+    //   } catch (e) {
+    //     console.log(e);
+    //   } finally {
+    //     controller = undefined;
+    //   }
+    // },
     async undo() {
       await denops.cmd(`undo ${seq_curs.pop()}`);
     },
@@ -201,7 +202,7 @@ export async function main(denops: Denops) {
     function! Hey() range abort
       call denops#notify("${denops.name}", "hey", [a:firstline, a:lastline])
     endfunction
-    command! -nargs=1 -range Hey <line1>,<line2>call Hey(<q-args>)
+    command! -nargs=0 -range Hey <line1>,<line2>call Hey(<q-args>)
 
     function! HeyAbort() abort
       call denops#notify("${denops.name}", "abort", [])
