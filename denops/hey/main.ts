@@ -11,37 +11,102 @@ import * as vars from "https://deno.land/x/denops_std@v4.0.0/variable/mod.ts";
 import * as fn from "https://deno.land/x/denops_std@v4.0.0/function/mod.ts";
 import outdent from "https://deno.land/x/outdent@v0.8.0/mod.ts";
 
-/**
- * The `hey` function sends a message to the ChatOpenAI model registered with Denops.
- *
- * @param {Denops} denops - The Denops object for current buffer
- * @param {number} firstline - The first line number of the range to send
- * @param {number} lastline - The last line number of the range to send
- * @param {string} request - The input text to send to the model
- * @param {AbortController} controller - The AbortController to abort the request
- * @returns {Promise<void>}
- */
-async function hey(
-  denops: Denops,
-  firstline: number,
-  lastline: number,
-  request: string,
-  controller: AbortController
-): Promise<void> {
-  const precontext = (
-    await fn.getline(denops, Math.max(firstline - 20, 0), firstline - 1)
-  ).join("\n");
-  const postcontext = (
-    await fn.getline(denops, lastline + 1, lastline + 20)
-  ).join("\n");
-  const context = (await fn.getline(denops, firstline, lastline)).join("\n");
-  const indent = " ".repeat((await fn.indent(denops, firstline)) as number);
-  const mutex = new Mutex();
-  await fn.deletebufline(denops, "%", firstline + 1, lastline);
-  await fn.setline(denops, firstline, [indent]);
-  await fn.setcursorcharpos(denops, firstline, 0);
+interface Command {
+  run: (denops: Denops, controller: AbortController) => Promise<void>;
+}
 
-  const model = new ChatOpenAI({
+class CmdHeyEdit implements Command {
+  constructor(
+    public readonly firstline: number,
+    public readonly lastline: number,
+    public readonly request: string
+  ) {}
+  public static readonly cmd: "heyEdit" = "heyEdit";
+  public async run(denops: Denops, controller: AbortController) {
+    const indent = " ".repeat(
+      (await fn.indent(denops, this.firstline)) as number
+    );
+    const precontext = (
+      await fn.getline(
+        denops,
+        Math.max(this.firstline - 20, 0),
+        this.firstline - 1
+      )
+    ).join("\n");
+    const postcontext = (
+      await fn.getline(denops, this.lastline + 1, this.lastline + 20)
+    ).join("\n");
+    const context = (
+      await fn.getline(denops, this.firstline, this.lastline)
+    ).join("\n");
+    await fn.deletebufline(denops, "%", this.firstline + 1, this.lastline);
+    await fn.setline(denops, this.firstline, [indent]);
+    await fn.setcursorcharpos(denops, this.firstline, 0);
+
+    const systemPrompt = outdent`
+    Act a professional ${await vars.o.get(denops, "filetype")} writer for:
+    - helping human to write code (e.g., auto-completion)
+    - helping human to write prose (e.g., grammar/ spelling correction)
+
+    The condition of the output is:
+    - Ask no question regarding the input.
+    - Must be only text according to the input.
+    - Must insert line breaks for each 80 letters.
+    - Must generate the concise text for any input.
+
+    The following is the example of the input.
+    <Prompt>${this.request}</Prompt>
+    <PreContext>${outdent.string("\n" + precontext)}</PreContext>
+    <Target>${outdent.string("\n" + context)}</Target>
+    <PostContext>${outdent.string("\n" + postcontext)}</PostContext>
+  `;
+
+    const userPrompt = outdent`
+    <Prompt>${this.request}</Prompt>
+    <PreContext>${outdent.string("\n" + precontext)}</PreContext>
+    <Target>${outdent.string("\n" + context)}</Target>
+    <PostContext>${outdent.string("\n" + postcontext)}</PostContext>
+  `;
+
+    const model = await getModel(denops, indent);
+    await model.call(
+      [new SystemChatMessage(systemPrompt), new HumanChatMessage(userPrompt)],
+      {
+        options: { signal: controller.signal },
+      }
+    );
+  }
+}
+
+class CmdHey implements Command {
+  constructor(
+    public readonly firstline: number,
+    public readonly lastline: number
+  ) {}
+  public static readonly cmd: "heyEdit" = "heyEdit";
+  public async run(denops: Denops, controller: AbortController) {
+    const indent = " ".repeat(
+      (await fn.indent(denops, this.firstline)) as number
+    );
+    const context = (
+      await fn.getline(denops, this.firstline, this.lastline)
+    ).join("\n");
+    await fn.deletebufline(denops, "%", this.firstline + 1, this.lastline);
+    await fn.setline(denops, this.lastline + 1, [indent]);
+    await fn.setcursorcharpos(denops, this.lastline + 1, 0);
+
+    // const systemPrompt = '';
+    const userPrompt = context;
+    const model = await getModel(denops, indent);
+    await model.call([new HumanChatMessage(userPrompt)], {
+      options: { signal: controller.signal },
+    });
+  }
+}
+
+async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
+  const mutex = new Mutex();
+  return new ChatOpenAI({
     modelName: await vars.g.get(denops, "hey_model_name", "gpt-3.5-turbo"),
     verbose: await vars.g.get(denops, "hey_verbose", false),
     streaming: true,
@@ -66,57 +131,40 @@ async function hey(
       },
     ],
   });
-  const systemPrompt = outdent`
-    Act a professional ${await vars.o.get(denops, "filetype")} writer for:
-    - helping human to write code (e.g., auto-completion)
-    - helping human to write prose (e.g., grammar/ spelling correction)
-
-    The condition of the output is:
-    - Ask no question regarding the input.
-    - Must be only text according to the input.
-    - Must insert line breaks for each 80 letters.
-    - Must generate the concise text for any input.
-
-    The following is the example of the input.
-    <Prompt>${request}</Prompt>
-    <PreContext>${outdent.string("\n" + precontext)}</PreContext>
-    <Target>${outdent.string("\n" + context)}</Target>
-    <PostContext>${outdent.string("\n" + postcontext)}</PostContext>
-  `;
-
-  const userPrompt = outdent`
-    <Prompt>${request}</Prompt>
-    <PreContext>${outdent.string("\n" + precontext)}</PreContext>
-    <Target>${outdent.string("\n" + context)}</Target>
-    <PostContext>${outdent.string("\n" + postcontext)}</PostContext>
-  `;
-
-  await model.call(
-    [new SystemChatMessage(systemPrompt), new HumanChatMessage(userPrompt)],
-    { options: { signal: controller.signal } }
-  );
 }
 
 export async function main(denops: Denops) {
   let controller: AbortController | undefined;
   const seq_curs: number[] = [];
-  let myfirstline = 0;
-  let mylastline = 0;
-  let myprompt = "";
+  let cmd: Command | undefined = undefined;
 
-  denops.dispatcher = {
-    async hey(...args) {
-      const afistline = args[0] as number;
-      const alastline = args[1] as number;
-      const aprompt = args[2] as string;
+  const createCmd = <T extends new (...args: any[]) => Command>(cls: T) => {
+    return async (...args: unknown[]) => {
       const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
       seq_curs.push(seq_cur);
-      myfirstline = afistline;
-      mylastline = alastline;
-      myprompt = aprompt;
+      cmd = new cls(...(args as ConstructorParameters<typeof cls>));
       try {
         controller = new AbortController();
-        await hey(denops, myfirstline, mylastline, myprompt, controller);
+        await cmd.run(denops, controller);
+      } catch (e) {
+        console.log(e);
+      } finally {
+        controller = undefined;
+      }
+    };
+  };
+
+  denops.dispatcher = {
+    hoyEdit: createCmd(CmdHeyEdit),
+    async heyEdit(...args) {
+      const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
+      seq_curs.push(seq_cur);
+      cmd = new CmdHeyEdit(
+        ...(args as ConstructorParameters<typeof CmdHeyEdit>)
+      );
+      try {
+        controller = new AbortController();
+        await cmd.run(denops, controller);
       } catch (e) {
         console.log(e);
       } finally {
@@ -127,29 +175,31 @@ export async function main(denops: Denops) {
       await denops.cmd(`undo ${seq_curs.pop()}`);
     },
     async again() {
+      if (!cmd) {
+        return;
+      }
       const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
       seq_curs.push(seq_cur);
       await denops.cmd(`undo ${seq_curs.at(-2)}`);
       try {
         controller = new AbortController();
-        await hey(denops, myfirstline, mylastline, myprompt, controller);
+        await cmd.run(denops, controller);
       } catch (e) {
         console.log(e);
       } finally {
         controller = undefined;
       }
     },
-    abort: () =>
-      new Promise((res) => {
-        controller?.abort();
-        res(null);
-      }),
+    abort: () => Promise.resolve(() => controller?.abort()),
   };
-  await helper.execute(
-    denops,
-    outdent`
-    function! Hey(prompt) range abort
-      call denops#notify("${denops.name}", "hey", [a:firstline, a:lastline, a:prompt])
+  const script = outdent`
+    function! HeyEdit(prompt) range abort
+      call denops#notify("${denops.name}", "heyEdit", [a:firstline, a:lastline, a:prompt])
+    endfunction
+    command! -nargs=1 -range HeyEdit <line1>,<line2>call HeyEdit(<q-args>)
+
+    function! Hey() range abort
+      call denops#notify("${denops.name}", "hey", [a:firstline, a:lastline])
     endfunction
     command! -nargs=1 -range Hey <line1>,<line2>call Hey(<q-args>)
 
@@ -170,6 +220,7 @@ export async function main(denops: Denops) {
     endfunction
     command! HeyAgain call HeyAgain()
     map <Plug>HeyAgain <Cmd>HeyAgain<CR>
-  `
-  );
+  `;
+
+  await helper.execute(denops, script);
 }
