@@ -91,7 +91,6 @@ class CmdHey implements Command {
     const context = (
       await fn.getline(denops, this.firstline, this.lastline)
     ).join("\n");
-    await fn.deletebufline(denops, "%", this.firstline + 1, this.lastline);
     await fn.setline(denops, this.lastline + 1, [indent]);
     await fn.setcursorcharpos(denops, this.lastline + 1, 0);
 
@@ -112,7 +111,12 @@ async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
     streaming: true,
     callbacks: [
       {
-        async handleLLMNewToken(token: string) {
+        handleLLMStart: async () => {
+          const crow = await fn.line(denops, ".");
+          await fn.append(denops, crow + 1, [">>>GENERATED", ""]);
+          await fn.setcursorcharpos(denops, crow + 2, 1);
+        },
+        handleLLMNewToken: async (token: string) => {
           await mutex.runExclusive(async () => {
             const crow = await fn.line(denops, ".");
             const cline = await fn.getline(denops, crow);
@@ -127,6 +131,11 @@ async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
             await fn.setline(denops, crow, lines);
             await fn.setcursorcharpos(denops, nrow, ncol);
           });
+        },
+        handleLLMEnd: async () => {
+          const crow = await fn.line(denops, ".");
+          await fn.append(denops, crow + 1, ["<<<GENERATED", ""]);
+          await fn.setcursorcharpos(denops, crow + 2, 1);
         },
       },
     ],
