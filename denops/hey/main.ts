@@ -97,9 +97,21 @@ class CmdHey implements Command {
     // const systemPrompt = '';
     const userPrompt = context;
     const model = await getModel(denops, indent);
+    {
+      const crow = await fn.line(denops, ".");
+      await fn.append(denops, crow + 1, ["", ""]);
+      await fn.setline(denops, crow + 1, [">>>GENERATED", ""]);
+      await fn.setcursorcharpos(denops, crow + 2, 0);
+    }
     await model.call([new HumanChatMessage(userPrompt)], {
       options: { signal: controller.signal },
     });
+    {
+      const crow = await fn.line(denops, ".");
+      await fn.append(denops, crow + 1, ["", ""]);
+      await fn.setline(denops, crow + 1, ["<<<GENERATED"]);
+      await fn.setcursorcharpos(denops, crow + 2, 0);
+    }
   }
 }
 
@@ -111,11 +123,6 @@ async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
     streaming: true,
     callbacks: [
       {
-        handleLLMStart: async () => {
-          const crow = await fn.line(denops, ".");
-          await fn.append(denops, crow + 1, [">>>GENERATED", ""]);
-          await fn.setcursorcharpos(denops, crow + 2, 1);
-        },
         handleLLMNewToken: async (token: string) => {
           await mutex.runExclusive(async () => {
             const crow = await fn.line(denops, ".");
@@ -132,11 +139,6 @@ async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
             await fn.setcursorcharpos(denops, nrow, ncol);
           });
         },
-        handleLLMEnd: async () => {
-          const crow = await fn.line(denops, ".");
-          await fn.append(denops, crow + 1, ["<<<GENERATED", ""]);
-          await fn.setcursorcharpos(denops, crow + 2, 1);
-        },
       },
     ],
   });
@@ -147,7 +149,9 @@ export async function main(denops: Denops) {
   const seq_curs: number[] = [];
   let cmd: Command | undefined = undefined;
 
-  const createCmd = <T extends new (...args: any[]) => Command>(cls: T) => {
+  // ref: ...args: never[]:  https://stackoverflow.com/questions/72960424/understanding-extends-args-unknown-unknown
+  // never is bottom type while unknown is a universal set
+  const createCmd = <T extends new (...args: never[]) => Command>(cls: T) => {
     return async (...args: unknown[]) => {
       const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
       seq_curs.push(seq_cur);
