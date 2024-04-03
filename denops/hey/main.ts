@@ -91,8 +91,6 @@ class CmdHey implements Command {
     const context = (
       await fn.getline(denops, this.firstline, this.lastline)
     ).join("\n");
-    // await fn.setline(denops, this.lastline + 1, [indent]);
-    // await fn.setcursorcharpos(denops, this.lastline + 1, 0);
 
     // const systemPrompt = '';
     const userPrompt = context;
@@ -107,7 +105,7 @@ async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
   const bufnr = await fn.bufnr(denops, ".");
   const mutex = new Mutex();
   // let isFirstChunk = true;
-  let crow = 1;
+  let currentRow = 1;
   return new ChatOpenAI({
     modelName: await vars.g.get(denops, "hey_model_name", "gpt-3.5-turbo"),
     verbose: await vars.g.get(denops, "hey_verbose", false),
@@ -116,45 +114,49 @@ async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
       {
         handleLLMStart: async (_llm, _prompts, _runId, _parentRunId) => {
           await mutex.acquire();
-          crow = await fn.line(denops, ".");
-          await fn.appendbufline(denops, bufnr, crow, [
+          currentRow = await fn.line(denops, ".");
+          await fn.appendbufline(denops, bufnr, currentRow, [
+            "",
             indent + " GENERATED",
             indent,
           ]);
-          crow += 2;
+          currentRow += 3;
           mutex.release();
         },
         handleLLMEnd: async (_output, _runId, _parentRunId) => {
           await mutex.acquire();
-          await denops.cmd("undojoin");
-          await fn.appendbufline(denops, bufnr, crow, [indent + " END"]);
+          await batch(denops, async () => {
+            await denops.cmd("undojoin");
+            await fn.appendbufline(denops, bufnr, currentRow, [
+              indent + " END",
+            ]);
+          });
           mutex.release();
         },
         handleLLMNewToken: async (token: string) => {
           await mutex.acquire();
-          const cline = (await fn.getbufline(denops, bufnr, crow))[0];
+          const cline = (await fn.getbufline(denops, bufnr, currentRow))[0];
 
           const tokenLines = token.split("\n");
-          console.log(tokenLines);
 
           const isSpaceRequired = cline.length == indent.length &&
             tokenLines[0].length > 0;
 
           const lines = [
             cline + (isSpaceRequired ? " " : "") + tokenLines[0],
-            ...tokenLines.slice(1).map((l) => {
-              return `${indent}${(l.length == 0 ? "" : " ")}${l}`;
-            }),
+            ...tokenLines.slice(1).map((l) =>
+              `${indent}${(l.length == 0 ? "" : " ")}${l}`
+            ),
           ];
 
           await batch(denops, async (denops) => {
             await denops.cmd("undojoin");
-            await fn.deletebufline(denops, bufnr, crow);
+            await fn.deletebufline(denops, bufnr, currentRow);
             await denops.cmd("undojoin");
-            await fn.appendbufline(denops, bufnr, crow - 1, lines);
+            await fn.appendbufline(denops, bufnr, currentRow - 1, lines);
             await denops.cmd("redraw");
           });
-          crow += lines.length - 1;
+          currentRow += lines.length - 1;
           mutex.release();
         },
       },
@@ -164,15 +166,12 @@ async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
 
 export async function main(denops: Denops) {
   let controller: AbortController | undefined;
-  const seq_curs: number[] = [];
   let cmd: Command | undefined = undefined;
 
   // ref: ...args: never[]:  https://stackoverflow.com/questions/72960424/understanding-extends-args-unknown-unknown
   // never is bottom type while unknown is a universal set
   const createCmd = <T extends new (...args: never[]) => Command>(cls: T) => {
     return async (...args: unknown[]) => {
-      const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
-      seq_curs.push(seq_cur);
       cmd = new cls(...(args as ConstructorParameters<typeof cls>));
       try {
         controller = new AbortController();
@@ -188,40 +187,6 @@ export async function main(denops: Denops) {
   denops.dispatcher = {
     heyEdit: createCmd(CmdHeyEdit),
     hey: createCmd(CmdHey),
-    // async heyEdit(...args) {
-    //   const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
-    //   seq_curs.push(seq_cur);
-    //   cmd = new CmdHeyEdit(
-    //     ...(args as ConstructorParameters<typeof CmdHeyEdit>)
-    //   );
-    //   try {
-    //     controller = new AbortController();
-    //     await cmd.run(denops, controller);
-    //   } catch (e) {
-    //     console.log(e);
-    //   } finally {
-    //     controller = undefined;
-    //   }
-    // },
-    async undo() {
-      await denops.cmd(`undo ${seq_curs.pop()}`);
-    },
-    async again() {
-      if (!cmd) {
-        return;
-      }
-      const { seq_cur } = (await fn.undotree(denops)) as { seq_cur: number };
-      seq_curs.push(seq_cur);
-      await denops.cmd(`undo ${seq_curs.at(-2)}`);
-      try {
-        controller = new AbortController();
-        await cmd.run(denops, controller);
-      } catch (e) {
-        console.log(e);
-      } finally {
-        controller = undefined;
-      }
-    },
     abort: () => Promise.resolve(() => controller?.abort()),
   };
   const script = outdent`
@@ -240,18 +205,6 @@ export async function main(denops: Denops) {
     endfunction
     command! HeyAbort call HeyAbort()
     map <Plug>HeyAbort <Cmd>HeyAbort<CR>
-
-    function! HeyUndo() abort
-      call denops#notify("${denops.name}", "undo", [])
-    endfunction
-    command! HeyUndo call HeyUndo()
-    map <Plug>HeyUndo <Cmd>HeyUndo<CR>
-
-    function! HeyAgain() abort
-      call denops#notify("${denops.name}", "again", [])
-    endfunction
-    command! HeyAgain call HeyAgain()
-    map <Plug>HeyAgain <Cmd>HeyAgain<CR>
   `;
 
   await helper.execute(denops, script);
