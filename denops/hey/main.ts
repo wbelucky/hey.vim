@@ -69,7 +69,7 @@ class CmdHeyEdit implements Command {
     <PostContext>${outdent.string("\n" + postcontext)}</PostContext>
   `;
 
-    const model = await getModel(denops, indent);
+    const model = await getModel(denops, indent, this.lastline);
     await model.call(
       [new SystemChatMessage(systemPrompt), new HumanChatMessage(userPrompt)],
       {
@@ -94,18 +94,22 @@ class CmdHey implements Command {
 
     // const systemPrompt = '';
     const userPrompt = context;
-    const model = await getModel(denops, indent);
+    const model = await getModel(denops, indent, this.lastline);
     await model.call([new HumanChatMessage(userPrompt)], {
       options: { signal: controller.signal },
     });
   }
 }
 
-async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
+async function getModel(
+  denops: Denops,
+  indent: string,
+  genRowFrom: number,
+): Promise<ChatOpenAI> {
   const bufnr = await fn.bufnr(denops, ".");
   const mutex = new Mutex();
   // let isFirstChunk = true;
-  let currentRow = 1;
+  let currentRow = genRowFrom;
   return new ChatOpenAI({
     modelName: await vars.g.get(denops, "hey_model_name", "gpt-3.5-turbo"),
     verbose: await vars.g.get(denops, "hey_verbose", false),
@@ -114,7 +118,6 @@ async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
       {
         handleLLMStart: async (_llm, _prompts, _runId, _parentRunId) => {
           await mutex.acquire();
-          currentRow = await fn.line(denops, ".");
           await fn.appendbufline(denops, bufnr, currentRow, [
             "",
             indent + " GENERATED",
