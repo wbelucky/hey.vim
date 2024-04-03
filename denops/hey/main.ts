@@ -6,7 +6,6 @@ import {
 import { Mutex } from "https://esm.sh/async-mutex@0.4.0";
 
 import { Denops } from "https://deno.land/x/denops_std@v6.0.0/mod.ts";
-import * as helper from "https://deno.land/x/denops_std@v6.0.0/helper/mod.ts";
 import * as vars from "https://deno.land/x/denops_std@v6.0.0/variable/mod.ts";
 import * as fn from "https://deno.land/x/denops_std@v6.0.0/function/mod.ts";
 import { batch } from "https://deno.land/x/denops_std@v6.0.0/batch/mod.ts";
@@ -138,7 +137,11 @@ async function getModel(
         },
         handleLLMNewToken: async (token: string) => {
           await mutex.acquire();
-          const cline = (await fn.getbufline(denops, bufnr, currentRow))[0];
+          const currentLines = await fn.getbufline(denops, bufnr, currentRow);
+          if (currentLines[0] === undefined) {
+            console.log({ currentRow, bufnr });
+          }
+          const cline = currentLines?.[0] ?? "";
 
           const tokenLines = token.split("\n");
 
@@ -167,7 +170,7 @@ async function getModel(
   });
 }
 
-export async function main(denops: Denops) {
+export function main(denops: Denops) {
   let controller: AbortController | undefined;
   let cmd: Command | undefined = undefined;
 
@@ -192,23 +195,4 @@ export async function main(denops: Denops) {
     hey: createCmd(CmdHey),
     abort: () => Promise.resolve(() => controller?.abort()),
   };
-  const script = outdent`
-    function! HeyEdit(prompt) range abort
-      call denops#notify("${denops.name}", "heyEdit", [a:firstline, a:lastline, a:prompt])
-    endfunction
-    command! -nargs=1 -range HeyEdit <line1>,<line2>call HeyEdit(<q-args>)
-
-    function! Hey() range abort
-      call denops#notify("${denops.name}", "hey", [a:firstline, a:lastline])
-    endfunction
-    command! -range Hey <line1>,<line2>call Hey()
-
-    function! HeyAbort() abort
-      call denops#notify("${denops.name}", "abort", [])
-    endfunction
-    command! HeyAbort call HeyAbort()
-    map <Plug>HeyAbort <Cmd>HeyAbort<CR>
-  `;
-
-  await helper.execute(denops, script);
 }
