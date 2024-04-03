@@ -5,10 +5,11 @@ import {
 } from "https://esm.sh/langchain@0.0.68/schema";
 import { Mutex } from "https://esm.sh/async-mutex@0.4.0";
 
-import { Denops } from "https://deno.land/x/denops_std@v4.0.0/mod.ts";
-import * as helper from "https://deno.land/x/denops_std@v4.0.0/helper/mod.ts";
-import * as vars from "https://deno.land/x/denops_std@v4.0.0/variable/mod.ts";
-import * as fn from "https://deno.land/x/denops_std@v4.0.0/function/mod.ts";
+import { Denops } from "https://deno.land/x/denops_std@v6.0.0/mod.ts";
+import * as helper from "https://deno.land/x/denops_std@v6.0.0/helper/mod.ts";
+import * as vars from "https://deno.land/x/denops_std@v6.0.0/variable/mod.ts";
+import * as fn from "https://deno.land/x/denops_std@v6.0.0/function/mod.ts";
+import { batch } from "https://deno.land/x/denops_std@v6.0.0/batch/mod.ts";
 import outdent from "https://deno.land/x/outdent@v0.8.0/mod.ts";
 
 interface Command {
@@ -19,18 +20,18 @@ class CmdHeyEdit implements Command {
   constructor(
     public readonly firstline: number,
     public readonly lastline: number,
-    public readonly request: string
+    public readonly request: string,
   ) {}
   public static readonly cmd: "heyEdit" = "heyEdit";
   public async run(denops: Denops, controller: AbortController) {
     const indent = " ".repeat(
-      (await fn.indent(denops, this.firstline)) as number
+      (await fn.indent(denops, this.firstline)) as number,
     );
     const precontext = (
       await fn.getline(
         denops,
         Math.max(this.firstline - 20, 0),
-        this.firstline - 1
+        this.firstline - 1,
       )
     ).join("\n");
     const postcontext = (
@@ -73,7 +74,7 @@ class CmdHeyEdit implements Command {
       [new SystemChatMessage(systemPrompt), new HumanChatMessage(userPrompt)],
       {
         options: { signal: controller.signal },
-      }
+      },
     );
   }
 }
@@ -81,63 +82,80 @@ class CmdHeyEdit implements Command {
 class CmdHey implements Command {
   constructor(
     public readonly firstline: number,
-    public readonly lastline: number
+    public readonly lastline: number,
   ) {}
   public static readonly cmd: "heyEdit" = "heyEdit";
   public async run(denops: Denops, controller: AbortController) {
-    const indent = " ".repeat(
-      (await fn.indent(denops, this.firstline)) as number
-    );
+    const indent =
+      " ".repeat((await fn.indent(denops, this.firstline)) as number) + ">";
     const context = (
       await fn.getline(denops, this.firstline, this.lastline)
     ).join("\n");
-    await fn.setline(denops, this.lastline + 1, [indent]);
-    await fn.setcursorcharpos(denops, this.lastline + 1, 0);
+    // await fn.setline(denops, this.lastline + 1, [indent]);
+    // await fn.setcursorcharpos(denops, this.lastline + 1, 0);
 
     // const systemPrompt = '';
     const userPrompt = context;
     const model = await getModel(denops, indent);
-    {
-      const crow = await fn.line(denops, ".");
-      await fn.append(denops, crow + 1, ["", ""]);
-      await fn.setline(denops, crow + 1, [">>>GENERATED", ""]);
-      await fn.setcursorcharpos(denops, crow + 2, 0);
-    }
     await model.call([new HumanChatMessage(userPrompt)], {
       options: { signal: controller.signal },
     });
-    {
-      const crow = await fn.line(denops, ".");
-      await fn.append(denops, crow + 1, ["", ""]);
-      await fn.setline(denops, crow + 1, ["<<<GENERATED"]);
-      await fn.setcursorcharpos(denops, crow + 2, 0);
-    }
   }
 }
 
 async function getModel(denops: Denops, indent: string): Promise<ChatOpenAI> {
+  const bufnr = await fn.bufnr(denops, ".");
   const mutex = new Mutex();
+  // let isFirstChunk = true;
+  let crow = 1;
   return new ChatOpenAI({
     modelName: await vars.g.get(denops, "hey_model_name", "gpt-3.5-turbo"),
     verbose: await vars.g.get(denops, "hey_verbose", false),
     streaming: true,
     callbacks: [
       {
+        handleLLMStart: async (_llm, _prompts, _runId, _parentRunId) => {
+          await mutex.acquire();
+          crow = await fn.line(denops, ".");
+          await fn.appendbufline(denops, bufnr, crow, [
+            indent + " GENERATED",
+            indent,
+          ]);
+          crow += 2;
+          mutex.release();
+        },
+        handleLLMEnd: async (_output, _runId, _parentRunId) => {
+          await mutex.acquire();
+          await denops.cmd("undojoin");
+          await fn.appendbufline(denops, bufnr, crow, [indent + " END"]);
+          mutex.release();
+        },
         handleLLMNewToken: async (token: string) => {
-          await mutex.runExclusive(async () => {
-            const crow = await fn.line(denops, ".");
-            const cline = await fn.getline(denops, crow);
-            const lines = (cline + token)
-              .replace("\n", "\n" + indent)
-              .split("\n");
-            const nrow = crow + lines.length - 1;
-            const ncol = Array.from(
-              new Intl.Segmenter().segment(lines.at(-1)!)
-            ).length;
-            await fn.append(denops, crow, Array(lines.length - 1).fill(""));
-            await fn.setline(denops, crow, lines);
-            await fn.setcursorcharpos(denops, nrow, ncol);
+          await mutex.acquire();
+          const cline = (await fn.getbufline(denops, bufnr, crow))[0];
+
+          const tokenLines = token.split("\n");
+          console.log(tokenLines);
+
+          const isSpaceRequired = cline.length == indent.length &&
+            tokenLines[0].length > 0;
+
+          const lines = [
+            cline + (isSpaceRequired ? " " : "") + tokenLines[0],
+            ...tokenLines.slice(1).map((l) => {
+              return `${indent}${(l.length == 0 ? "" : " ")}${l}`;
+            }),
+          ];
+
+          await batch(denops, async (denops) => {
+            await denops.cmd("undojoin");
+            await fn.deletebufline(denops, bufnr, crow);
+            await denops.cmd("undojoin");
+            await fn.appendbufline(denops, bufnr, crow - 1, lines);
+            await denops.cmd("redraw");
           });
+          crow += lines.length - 1;
+          mutex.release();
         },
       },
     ],
