@@ -105,7 +105,7 @@ async function getModel(
   indent: string,
   genRowFrom: number,
 ): Promise<ChatOpenAI> {
-  const bufnr = await fn.bufnr(denops, ".");
+  const bufnr = await fn.bufnr(denops, "%");
   const mutex = new Mutex();
   // let isFirstChunk = true;
   let currentRow = genRowFrom;
